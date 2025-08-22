@@ -5,6 +5,7 @@ import os
 import shutil
 import psutil
 import asyncio
+import signal
 from time import time
 
 from dotenv import load_dotenv
@@ -68,12 +69,13 @@ print("Loaded SESSION_STRING length:", len(PyroConf.SESSION_STRING) if PyroConf.
 from logger import LOGGER
 
 # Initialize the bot client
+_WORKERS = int(os.getenv("BOT_WORKERS", "64"))  # tune for Heroku dyno size
 bot = Client(
     "media_bot",
     api_id=PyroConf.API_ID,
     api_hash=PyroConf.API_HASH,
     bot_token=PyroConf.BOT_TOKEN,
-    workers=1000,
+    workers=_WORKERS,
     parse_mode=ParseMode.MARKDOWN,
 )
 
@@ -190,6 +192,22 @@ BOT_COMMANDS = [
     ("logs", "Fetch recent logs"),
     ("stats", "Show resource stats"),
 ]
+
+DEBUG_UPDATES = os.getenv("DEBUG_UPDATES", "0") == "1"
+
+if DEBUG_UPDATES:
+    @bot.on_message()
+    async def _debug_all_updates(_, message: Message):
+        try:
+            LOGGER(__name__).info(
+                "UPDATE chat=%s type=%s from=%s text=%r", 
+                getattr(message.chat, 'id', None),
+                getattr(message.chat, 'type', None),
+                getattr(message.from_user, 'id', None) if message.from_user else None,
+                message.text if message.text else (message.caption or None)
+            )
+        except Exception as e:
+            LOGGER(__name__).error(f"Debug update logging failed: {e}")
 
 
 @bot.on_message(filters.command("start") & (filters.private | filters.group))
@@ -792,15 +810,41 @@ if __name__ == "__main__":
         LOGGER(__name__).info("User client started (is_connected=%s)", getattr(user, 'is_connected', False))
         await bot.start()
         LOGGER(__name__).info("Bot client started (is_connected=%s)", getattr(bot, 'is_connected', False))
+        # Ensure no lingering webhook (Heroku should use long polling)
+        try:
+            await bot.delete_webhook(True)
+            LOGGER(__name__).info("Cleared webhook (long polling mode)")
+        except Exception as e:
+            LOGGER(__name__).warning(f"Webhook clear failed: {e}")
         try:
             await bot.set_bot_commands([BotCommand(c, d[:256]) for c, d in BOT_COMMANDS])
             LOGGER(__name__).info("Bot commands registered")
         except Exception as e:
             LOGGER(__name__).error(f"Failed to register commands: {e}")
         LOGGER(__name__).info("Entering idle state")
+
+        stop_event = asyncio.Event()
+
+        def _handle_sig(*_):
+            LOGGER(__name__).info("Signal received, initiating graceful shutdown")
+            stop_event.set()
+            CANCEL_EVENT.set()
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                asyncio.get_running_loop().add_signal_handler(sig, _handle_sig)
+            except NotImplementedError:
+                pass
         idle_start = time()
         try:
-            await idle()
+            # Run idle until stop_event triggered
+            idle_task = asyncio.create_task(idle())
+            await asyncio.wait(
+                {idle_task, asyncio.create_task(stop_event.wait())},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not idle_task.done():
+                idle_task.cancel()
             # If idle returns almost immediately (<2s), log diagnostic to help debugging Heroku loop issue
             if time() - idle_start < 2:
                 LOGGER(__name__).warning("idle() returned too quickly (%.2fs) – clients may have disconnected early.", time() - idle_start)
