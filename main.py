@@ -69,7 +69,7 @@ print("Loaded SESSION_STRING length:", len(PyroConf.SESSION_STRING) if PyroConf.
 from logger import LOGGER
 
 # Initialize the bot client
-_WORKERS = int(os.getenv("BOT_WORKERS", "64"))  # tune for Heroku dyno size
+_WORKERS = int(os.getenv("BOT_WORKERS", "32"))  # tune for Heroku dyno size (32 is plenty for most dynos)
 bot = Client(
     "media_bot",
     api_id=PyroConf.API_ID,
@@ -810,12 +810,10 @@ if __name__ == "__main__":
         LOGGER(__name__).info("User client started (is_connected=%s)", getattr(user, 'is_connected', False))
         await bot.start()
         LOGGER(__name__).info("Bot client started (is_connected=%s)", getattr(bot, 'is_connected', False))
-        # Ensure no lingering webhook (Heroku should use long polling)
-        try:
-            await bot.delete_webhook(True)
-            LOGGER(__name__).info("Cleared webhook (long polling mode)")
-        except Exception as e:
-            LOGGER(__name__).warning(f"Webhook clear failed: {e}")
+        # Webhooks are Bot API only; running via MTProto means no webhook is ever set.
+        # Previous attempt to call delete_webhook produced an AttributeError on Pyrofork Client.
+        # We skip it explicitly to avoid noisy logs.
+        LOGGER(__name__).info("Skipping webhook clear (MTProto session; no webhook applicable)")
         try:
             await bot.set_bot_commands([BotCommand(c, d[:256]) for c, d in BOT_COMMANDS])
             LOGGER(__name__).info("Bot commands registered")
