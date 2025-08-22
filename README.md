@@ -73,6 +73,67 @@ To stop the bot:
 docker compose down
 ```
 
+## Deploy to Heroku
+
+You can run this bot on Heroku (Free/Basic dynos) as a worker process.
+
+### One-Click (if you forked and enabled the button)
+
+Use a Deploy button referencing `app.json` in your fork (example snippet):
+
+```
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
+```
+
+### Manual Deploy Steps
+
+1. Create a Heroku app:
+  ```sh
+  heroku create my-media-bot
+  ```
+2. Set required config vars (replace with your real values):
+  ```sh
+  heroku config:set API_ID=123456 API_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa BOT_TOKEN=123456:abcdefSESSION SESSION_STRING=YOUR_LONG_STRING TZ=UTC -a my-media-bot
+  ```
+3. Push code:
+  ```sh
+  git push heroku main
+  ```
+4. Scale the worker (Procfile defines `worker: python main.py`):
+  ```sh
+  heroku ps:scale worker=1
+  ```
+5. View logs:
+  ```sh
+  heroku logs --tail
+  ```
+
+### Generating SESSION_STRING for Heroku
+
+Locally run:
+```sh
+python generate_session.py
+```
+Copy the printed session string and set it in Heroku config vars as `SESSION_STRING`.
+
+### Notes
+
+- Heroku ephemeral filesystem means downloaded media is temporary; this bot sends media immediately, so it's fine.
+- Keep downloads small to avoid hitting the 512 MB RAM limit on free tiers.
+- If you change environment variables, restart the dyno: `heroku restart`.
+- Ensure you never expose `SESSION_STRING` in public logs or commits.
+- For video thumbnails & metadata (duration) you need ffmpeg/ffprobe. Add a file named `Aptfile` with a single line `ffmpeg` then push again; Heroku will build it. Without it, the bot still works (just no custom thumbnails/duration extraction).
+
+### Optional: Add ffmpeg on Heroku (recommended)
+
+1. Create `Aptfile` in project root with:
+  ```
+  ffmpeg
+  ```
+2. Commit & push. Heroku will install ffmpeg during slug compile.
+
+
+
 ## Usage
 
 - **`/start`** – Welcomes you and gives a brief introduction.  

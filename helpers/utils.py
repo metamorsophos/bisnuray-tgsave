@@ -2,6 +2,7 @@
 # Channel: https://t.me/itsSmartDev
 
 import os
+import shutil
 from time import time
 from PIL import Image
 from logger import LOGGER
@@ -54,19 +55,32 @@ async def cmd_exec(cmd, shell=False):
 
 
 async def get_media_info(path):
+    """Return (duration, artist, title) if ffprobe available, else safe fallbacks.
+
+    On Heroku, ffprobe comes from the ffmpeg package installed via Aptfile. If not
+    present (e.g., local minimal install), we degrade gracefully.
+    """
+    if not shutil.which("ffprobe"):
+        return 0, None, None
     try:
         result = await cmd_exec([
             "ffprobe", "-hide_banner", "-loglevel", "error",
             "-print_format", "json", "-show_format", path,
         ])
     except Exception as e:
-        print(f"Get Media Info: {e}. Mostly File not found! - File: {path}")
+        LOGGER(__name__).info(f"ffprobe unavailable or failed: {e}")
         return 0, None, None
     if result[0] and result[2] == 0:
-        fields = eval(result[0]).get("format")
+        try:
+            fields = eval(result[0]).get("format")
+        except Exception:
+            return 0, None, None
         if not fields:
             return 0, None, None
-        duration = round(float(fields.get("duration", 0)))
+        try:
+            duration = round(float(fields.get("duration", 0)))
+        except Exception:
+            duration = 0
         tags = fields.get("tags", {})
         artist = tags.get("artist") or tags.get("ARTIST") or tags.get("Artist")
         title = tags.get("title") or tags.get("TITLE") or tags.get("Title")
@@ -75,6 +89,8 @@ async def get_media_info(path):
 
 
 async def get_video_thumbnail(video_file, duration):
+    if not shutil.which("ffmpeg"):
+        return None
     output = os.path.join("Assets", "video_thumb.jpg")
     if duration is None:
         duration = (await get_media_info(video_file))[0]
@@ -85,13 +101,15 @@ async def get_video_thumbnail(video_file, duration):
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-ss", str(duration), "-i", video_file,
         "-vf", "thumbnail", "-q:v", "1", "-frames:v", "1",
-        "-threads", str(os.cpu_count() // 2), output,
+        "-threads", str(max(1, (os.cpu_count() or 2) // 2)), output,
     ]
     try:
         _, err, code = await wait_for(cmd_exec(cmd), timeout=60)
         if code != 0 or not os.path.exists(output):
+            LOGGER(__name__).info(f"Thumbnail generation failed (code={code}): {err}")
             return None
-    except:
+    except Exception as e:
+        LOGGER(__name__).info(f"Thumbnail generation exception: {e}")
         return None
     return output
 
