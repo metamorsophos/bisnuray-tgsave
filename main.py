@@ -789,19 +789,36 @@ if __name__ == "__main__":
     async def _main():
         LOGGER(__name__).info("Starting clients...")
         await user.start()
+        LOGGER(__name__).info("User client started (is_connected=%s)", getattr(user, 'is_connected', False))
         await bot.start()
+        LOGGER(__name__).info("Bot client started (is_connected=%s)", getattr(bot, 'is_connected', False))
         try:
             await bot.set_bot_commands([BotCommand(c, d[:256]) for c, d in BOT_COMMANDS])
             LOGGER(__name__).info("Bot commands registered")
         except Exception as e:
             LOGGER(__name__).error(f"Failed to register commands: {e}")
         LOGGER(__name__).info("Entering idle state")
+        idle_start = time()
         try:
             await idle()
+            # If idle returns almost immediately (<2s), log diagnostic to help debugging Heroku loop issue
+            if time() - idle_start < 2:
+                LOGGER(__name__).warning("idle() returned too quickly (%.2fs) – clients may have disconnected early.", time() - idle_start)
         finally:
             LOGGER(__name__).info("Shutting down...")
-            await bot.stop()
-            await user.stop()
+            # Guarded stop to avoid cross-loop RuntimeError seen on Heroku
+            for c, label in ((bot, 'bot'), (user, 'user')):
+                try:
+                    if getattr(c, 'is_connected', False):
+                        await c.stop()
+                        LOGGER(__name__).info("Stopped %s client", label)
+                except RuntimeError as re:
+                    if 'attached to a different loop' in str(re):
+                        LOGGER(__name__).warning("Ignoring loop mismatch stopping %s: %s", label, re)
+                    else:
+                        LOGGER(__name__).error("Error stopping %s: %s", label, re)
+                except Exception as e:
+                    LOGGER(__name__).error("Unexpected error stopping %s: %s", label, e)
             LOGGER(__name__).info("Bot Stopped")
 
     try:
